@@ -198,7 +198,8 @@ button {
 }
 
 .control-band,
-.export-band {
+.export-band,
+.schedule-alert {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -210,9 +211,26 @@ button {
 }
 
 .control-band h3,
-.export-band h3 {
+.export-band h3,
+.schedule-alert h3 {
   margin-top: 4px;
   font-size: 20px;
+}
+
+.schedule-alert {
+  border-color: #e4b363;
+  background: #fff7e8;
+}
+
+.schedule-alert.ended {
+  border-color: #df4d3f;
+  background: #fff0ee;
+}
+
+.schedule-alert p {
+  margin: 8px 0 0;
+  color: #5d5140;
+  line-height: 1.5;
 }
 
 .control-buttons {

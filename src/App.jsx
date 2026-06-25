@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bell,
   CalendarDays,
@@ -108,8 +108,55 @@ const privacyRules = [
 function App() {
   const [activeView, setActiveView] = useState("today");
   const [recordingState, setRecordingState] = useState("idle");
+  const recordingStateRef = useRef(recordingState);
   const [query, setQuery] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [schedulePrompt, setSchedulePrompt] = useState(null);
+
+  useEffect(() => {
+    recordingStateRef.current = recordingState;
+    window.workMemorySchedule?.updateRecordingState(recordingState);
+  }, [recordingState]);
+
+  useEffect(() => {
+    const scheduleApi = window.workMemorySchedule;
+
+    if (!scheduleApi) {
+      return undefined;
+    }
+
+    const removeOpenToday = scheduleApi.onOpenToday(() => {
+      setActiveView("today");
+      setSchedulePrompt({
+        type: "morning",
+        title: "是否開始今日工作記錄？",
+        message: "請手動按「開始記錄」才會進入記錄中狀態。"
+      });
+    });
+
+    const removeAutoStop = scheduleApi.onAutoStop(() => {
+      const currentState = recordingStateRef.current;
+
+      setActiveView("today");
+
+      if (currentState === "recording" || currentState === "paused") {
+        setRecordingState("stopped");
+        setSchedulePrompt({
+          type: "ended",
+          title: "今日記錄已結束，是否產生摘要？",
+          message: "已在 19:00 自動停止。目前先顯示第一階段摘要預覽。"
+        });
+        return;
+      }
+
+      setSchedulePrompt(null);
+    });
+
+    return () => {
+      removeOpenToday();
+      removeAutoStop();
+    };
+  }, []);
 
   const filteredRecords = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -155,6 +202,7 @@ function App() {
 
   function startRecording() {
     setRecordingState("recording");
+    setSchedulePrompt(null);
     setActiveView("today");
   }
 
@@ -168,6 +216,15 @@ function App() {
 
   function stopRecording() {
     setRecordingState("stopped");
+    setActiveView("today");
+  }
+
+  function dismissSchedulePrompt() {
+    setSchedulePrompt(null);
+  }
+
+  function showSummaryFromPrompt() {
+    setSchedulePrompt(null);
     setActiveView("today");
   }
 
@@ -241,10 +298,13 @@ function App() {
         {activeView === "today" && (
           <TodayView
             recordingState={recordingState}
+            schedulePrompt={schedulePrompt}
             onStart={startRecording}
             onPause={pauseRecording}
             onResume={resumeRecording}
             onStop={stopRecording}
+            onDismissSchedulePrompt={dismissSchedulePrompt}
+            onShowSummary={showSummaryFromPrompt}
           />
         )}
 
@@ -268,7 +328,16 @@ function App() {
   );
 }
 
-function TodayView({ recordingState, onStart, onPause, onResume, onStop }) {
+function TodayView({
+  recordingState,
+  schedulePrompt,
+  onStart,
+  onPause,
+  onResume,
+  onStop,
+  onDismissSchedulePrompt,
+  onShowSummary
+}) {
   return (
     <div className="view-stack">
       <section className="control-band">
@@ -306,6 +375,27 @@ function TodayView({ recordingState, onStart, onPause, onResume, onStop }) {
           )}
         </div>
       </section>
+
+      {schedulePrompt ? (
+        <section className={`schedule-alert ${schedulePrompt.type}`}>
+          <div>
+            <p className="eyebrow">排程提醒</p>
+            <h3>{schedulePrompt.title}</h3>
+            <p>{schedulePrompt.message}</p>
+          </div>
+          <div className="control-buttons">
+            {schedulePrompt.type === "ended" ? (
+              <button className="primary-action" onClick={onShowSummary}>
+                <ListChecks size={18} />
+                產生摘要
+              </button>
+            ) : null}
+            <button className="secondary-action" onClick={onDismissSchedulePrompt}>
+              知道了
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <section className="schedule-grid">
         <InfoTile
