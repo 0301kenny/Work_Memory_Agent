@@ -25,5 +25,14 @@ contextBridge.exposeInMainWorld("workMemorySchedule", {
 contextBridge.exposeInMainWorld("workMemoryAudio", {
   saveRecording(recording) {
     return ipcRenderer.invoke("recording:save", recording);
+  },
+  showRecordingInFolder(filePath) {
+    return ipcRenderer.invoke("recording:show-in-folder", filePath);
+  }
+});
+
+contextBridge.exposeInMainWorld("workMemoryAi", {
+  processRecording(request) {
+    return ipcRenderer.invoke("ai:process-recording", request);
   }
 });

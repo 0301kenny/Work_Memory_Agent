@@ -105,6 +105,17 @@ const privacyRules = [
   "資料先存在本機"
 ];
 
+const aiSummarySections = [
+  ["discussionSummary", "今日討論摘要"],
+  ["stakeholderRequests", "主管 / 利害關係人交辦事項"],
+  ["kennyTasks", "Kenny 待處理任務"],
+  ["otherTasks", "其他人待處理任務"],
+  ["decisionsMade", "已決策事項"],
+  ["undecidedItems", "尚未決策事項"],
+  ["risksAndBlockers", "風險與阻塞"],
+  ["tomorrowReminders", "明日提醒"]
+];
+
 function getPreferredMimeType() {
   const candidates = [
     "audio/webm;codecs=opus",
@@ -134,6 +145,10 @@ function App() {
   const [recordingError, setRecordingError] = useState("");
   const [savedRecording, setSavedRecording] = useState(null);
   const [isSavingRecording, setIsSavingRecording] = useState(false);
+  const [aiStatus, setAiStatus] = useState("idle");
+  const [aiError, setAiError] = useState("");
+  const [transcript, setTranscript] = useState(null);
+  const [aiSummary, setAiSummary] = useState(null);
 
   useEffect(() => {
     recordingStateRef.current = recordingState;
@@ -228,6 +243,10 @@ function App() {
   async function startRecording() {
     setRecordingError("");
     setSavedRecording(null);
+    setAiStatus("idle");
+    setAiError("");
+    setTranscript(null);
+    setAiSummary(null);
     setSchedulePrompt(null);
     setActiveView("today");
 
@@ -299,6 +318,13 @@ function App() {
           });
 
           setSavedRecording(savedFile);
+
+          if (apiKey.trim()) {
+            processSavedRecording(savedFile);
+          } else {
+            setAiStatus("needs-key");
+            setAiError("請先到設定頁貼上 API key，再回來產生 AI 整理。");
+          }
         } catch (error) {
           setRecordingError(`音訊檔保存失敗：${error.message}`);
         } finally {
@@ -364,6 +390,60 @@ function App() {
   function showSummaryFromPrompt() {
     setSchedulePrompt(null);
     setActiveView("today");
+  }
+
+  async function openRecordingFolder(filePath) {
+    setRecordingError("");
+
+    if (!window.workMemoryAudio?.showRecordingInFolder) {
+      setRecordingError("目前無法開啟音訊檔資料夾，請用桌面 App 開啟。");
+      return;
+    }
+
+    try {
+      await window.workMemoryAudio.showRecordingInFolder(filePath);
+    } catch (error) {
+      setRecordingError(`無法開啟音訊檔資料夾：${error.message}`);
+    }
+  }
+
+  async function processSavedRecording(recording = savedRecording) {
+    setAiError("");
+
+    if (!recording) {
+      setAiError("請先完成一次錄音並保存音訊檔。");
+      setAiStatus("error");
+      return;
+    }
+
+    if (!apiKey.trim()) {
+      setAiError("請先到設定頁貼上 API key。");
+      setAiStatus("needs-key");
+      setActiveView("settings");
+      return;
+    }
+
+    if (!window.workMemoryAi?.processRecording) {
+      setAiError("目前無法使用 AI 整理，請用桌面 App 開啟。");
+      setAiStatus("error");
+      return;
+    }
+
+    try {
+      setAiStatus("processing");
+      const result = await window.workMemoryAi.processRecording({
+        apiKey,
+        recording
+      });
+
+      setTranscript(result.transcript);
+      setAiSummary(result.summary);
+      setAiStatus("done");
+      setActiveView("today");
+    } catch (error) {
+      setAiError(error.message);
+      setAiStatus("error");
+    }
   }
 
   return (
@@ -440,12 +520,18 @@ function App() {
             recordingError={recordingError}
             savedRecording={savedRecording}
             isSavingRecording={isSavingRecording}
+            aiStatus={aiStatus}
+            aiError={aiError}
+            transcript={transcript}
+            aiSummary={aiSummary}
             onStart={startRecording}
             onPause={pauseRecording}
             onResume={resumeRecording}
             onStop={stopRecording}
             onDismissSchedulePrompt={dismissSchedulePrompt}
             onShowSummary={showSummaryFromPrompt}
+            onOpenRecordingFolder={openRecordingFolder}
+            onGenerateAiSummary={() => processSavedRecording()}
           />
         )}
 
@@ -475,12 +561,18 @@ function TodayView({
   recordingError,
   savedRecording,
   isSavingRecording,
+  aiStatus,
+  aiError,
+  transcript,
+  aiSummary,
   onStart,
   onPause,
   onResume,
   onStop,
   onDismissSchedulePrompt,
-  onShowSummary
+  onShowSummary,
+  onOpenRecordingFolder,
+  onGenerateAiSummary
 }) {
   return (
     <div className="view-stack">
@@ -529,6 +621,22 @@ function TodayView({
           App 只會請求麥克風權限，不會錄螢幕，也不會記錄鍵盤輸入。
           第一次按「開始記錄」時，macOS 可能會跳出麥克風權限確認。
         </p>
+        {(recordingState === "recording" || recordingState === "paused") ? (
+          <div
+            className={`recording-activity ${recordingState}`}
+            aria-label={recordingState === "recording" ? "錄音正在進行" : "錄音已暫停"}
+          >
+            <span className="recording-dot" />
+            <span className="recording-bars" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+            </span>
+            <strong>{recordingState === "recording" ? "錄音運行中" : "錄音已暫停"}</strong>
+          </div>
+        ) : null}
         {recordingState === "recording" ? (
           <p className="recording-live">記錄中：正在接收麥克風音訊。</p>
         ) : null}
@@ -540,13 +648,64 @@ function TodayView({
         ) : null}
         {savedRecording ? (
           <p className="recording-saved">
-            已保存音訊檔：<span>{savedRecording.filePath}</span>
+            已保存音訊檔：
+            <button
+              className="recording-path-link"
+              onClick={() => onOpenRecordingFolder(savedRecording.filePath)}
+              type="button"
+            >
+              {savedRecording.filePath}
+            </button>
           </p>
         ) : null}
+        {savedRecording ? (
+          <div className="ai-action-row">
+            <button
+              className="primary-action"
+              disabled={aiStatus === "processing"}
+              onClick={onGenerateAiSummary}
+              type="button"
+            >
+              <ListChecks size={18} />
+              {aiStatus === "processing" ? "AI 整理中..." : "產生 AI 整理"}
+            </button>
+            <span>
+              {aiStatus === "done"
+                ? "逐字稿與摘要已產生"
+                : "會使用設定頁貼上的 API key"}
+            </span>
+          </div>
+        ) : null}
+        {aiError ? <p className="recording-error">{aiError}</p> : null}
         {recordingError ? (
           <p className="recording-error">{recordingError}</p>
         ) : null}
       </section>
+
+      {(transcript || aiSummary) ? (
+        <section className="ai-results">
+          <div className="summary-title">
+            <ListChecks size={18} />
+            <h3>AI 整理結果</h3>
+          </div>
+
+          {transcript ? (
+            <details className="transcript-panel">
+              <summary>查看逐字稿與時間點</summary>
+              <div className="transcript-list">
+                {transcript.segments.map((segment) => (
+                  <p key={`${segment.time}-${segment.text}`}>
+                    <span>{segment.time}</span>
+                    {segment.text}
+                  </p>
+                ))}
+              </div>
+            </details>
+          ) : null}
+
+          {aiSummary ? <AiSummaryGrid summary={aiSummary} /> : null}
+        </section>
+      ) : null}
 
       {schedulePrompt ? (
         <section className={`schedule-alert ${schedulePrompt.type}`}>
@@ -603,6 +762,37 @@ function TodayView({
         ))}
       </section>
     </div>
+  );
+}
+
+function AiSummaryGrid({ summary }) {
+  return (
+    <section className="summary-grid ai-summary-grid">
+      {aiSummarySections.map(([key, title]) => {
+        const items = summary[key] ?? [];
+
+        return (
+          <article className="summary-card" key={key}>
+            <div className="summary-title">
+              <ListChecks size={18} />
+              <h3>{title}</h3>
+            </div>
+            {items.length ? (
+              <ul>
+                {items.map((item, index) => (
+                  <li key={`${key}-${index}`}>
+                    <span className="source-time">{item.sourceTime}</span>
+                    {item.text}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty-summary">沒有整理到相關內容。</p>
+            )}
+          </article>
+        );
+      })}
+    </section>
   );
 }
 
@@ -669,11 +859,11 @@ function SettingsView({ apiKey, setApiKey }) {
           id="api-key"
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
-          placeholder="第一階段不會送出或儲存"
+          placeholder="貼上 OpenAI API key"
           type="password"
         />
         <p>
-          第一階段只建立設定欄位。之後才會加入本機安全保存與 AI 摘要串接。
+          API key 只保存在目前 App 畫面狀態，不會寫死在程式裡。產生逐字稿與 AI 整理時才會送到 OpenAI API。
         </p>
       </section>
 
