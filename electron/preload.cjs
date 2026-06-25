@@ -21,3 +21,9 @@ contextBridge.exposeInMainWorld("workMemorySchedule", {
     ipcRenderer.send("recording-state:changed", state);
   }
 });
+
+contextBridge.exposeInMainWorld("workMemoryAudio", {
+  saveRecording(recording) {
+    return ipcRenderer.invoke("recording:save", recording);
+  }
+});

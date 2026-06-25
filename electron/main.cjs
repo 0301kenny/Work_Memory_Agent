@@ -1,10 +1,31 @@
 const { app, BrowserWindow, Notification, ipcMain } = require("electron");
+const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const isDev = !app.isPackaged;
 let mainWindow = null;
 let currentRecordingState = "idle";
 const activeRecordingStates = new Set(["recording", "paused"]);
+
+function getRecordingExtension(mimeType) {
+  if (mimeType?.includes("mp4")) {
+    return "m4a";
+  }
+
+  if (mimeType?.includes("ogg")) {
+    return "ogg";
+  }
+
+  return "webm";
+}
+
+function getRecordingFilename(startedAt, mimeType) {
+  const date = startedAt ? new Date(startedAt) : new Date();
+  const timestamp = date.toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "");
+  const extension = getRecordingExtension(mimeType);
+
+  return `work-memory-${timestamp}.${extension}`;
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -132,6 +153,30 @@ app.whenReady().then(() => {
     if (["idle", "recording", "paused", "stopped"].includes(state)) {
       currentRecordingState = state;
     }
+  });
+
+  ipcMain.handle("recording:save", async (_event, recording) => {
+    const { audioData, mimeType, startedAt, endedAt } = recording ?? {};
+
+    if (!audioData) {
+      throw new Error("沒有收到錄音資料");
+    }
+
+    const recordingsDir = path.join(app.getPath("userData"), "recordings");
+    const filename = getRecordingFilename(startedAt, mimeType);
+    const filePath = path.join(recordingsDir, filename);
+    const buffer = Buffer.from(audioData);
+
+    await fs.mkdir(recordingsDir, { recursive: true });
+    await fs.writeFile(filePath, buffer);
+
+    return {
+      filePath,
+      filename,
+      mimeType,
+      startedAt,
+      endedAt
+    };
   });
 
   createWindow();

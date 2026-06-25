@@ -276,7 +276,8 @@ button {
 .info-tile,
 .summary-card,
 .history-card,
-.settings-panel {
+.settings-panel,
+.recording-info {
   border: 1px solid #e4ded2;
   border-radius: 8px;
   background: #fffdfa;
@@ -321,6 +322,52 @@ button {
 .summary-card {
   padding: 18px;
   min-height: 150px;
+}
+
+.recording-info {
+  padding: 18px;
+}
+
+.recording-info h3 {
+  margin: 0;
+}
+
+.recording-info p {
+  margin: 10px 0 0;
+  color: #636760;
+  line-height: 1.5;
+}
+
+.recording-live {
+  color: #a8271d;
+  font-weight: 800;
+}
+
+.recording-paused,
+.recording-saving {
+  color: #6b4a12;
+  font-weight: 800;
+}
+
+.recording-saved {
+  color: #245b3a;
+  font-weight: 800;
+}
+
+.recording-saved span {
+  display: block;
+  margin-top: 4px;
+  color: #2f4f3f;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.recording-error {
+  color: #a8271d;
+  font-weight: 800;
 }
 
 .summary-card li,

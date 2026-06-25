@@ -105,13 +105,35 @@ const privacyRules = [
   "資料先存在本機"
 ];
 
+function getPreferredMimeType() {
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/ogg;codecs=opus"
+  ];
+
+  if (!window.MediaRecorder?.isTypeSupported) {
+    return "";
+  }
+
+  return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? "";
+}
+
 function App() {
   const [activeView, setActiveView] = useState("today");
   const [recordingState, setRecordingState] = useState("idle");
   const recordingStateRef = useRef(recordingState);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const mediaStreamRef = useRef(null);
+  const recordingStartedAtRef = useRef(null);
   const [query, setQuery] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [schedulePrompt, setSchedulePrompt] = useState(null);
+  const [recordingError, setRecordingError] = useState("");
+  const [savedRecording, setSavedRecording] = useState(null);
+  const [isSavingRecording, setIsSavingRecording] = useState(false);
 
   useEffect(() => {
     recordingStateRef.current = recordingState;
@@ -140,12 +162,7 @@ function App() {
       setActiveView("today");
 
       if (currentState === "recording" || currentState === "paused") {
-        setRecordingState("stopped");
-        setSchedulePrompt({
-          type: "ended",
-          title: "今日記錄已結束，是否產生摘要？",
-          message: "已在 19:00 自動停止。目前先顯示第一階段摘要預覽。"
-        });
+        stopRecording({ showSummaryPrompt: true });
         return;
       }
 
@@ -200,23 +217,144 @@ function App() {
     return lines.join("\n");
   }, []);
 
-  function startRecording() {
-    setRecordingState("recording");
+  useEffect(() => {
+    return () => {
+      mediaRecorderRef.current = null;
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    };
+  }, []);
+
+  async function startRecording() {
+    setRecordingError("");
+    setSavedRecording(null);
     setSchedulePrompt(null);
     setActiveView("today");
+
+    if (recordingStateRef.current === "recording") {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setRecordingError("這個環境不支援麥克風錄音，請改用桌面 App 開啟。");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false
+      });
+      const mimeType = getPreferredMimeType();
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined
+      );
+
+      audioChunksRef.current = [];
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recordingStartedAtRef.current = new Date().toISOString();
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        setRecordingError("錄音時發生錯誤，請停止後再重新開始。");
+      };
+
+      recorder.onstop = async () => {
+        const chunks = audioChunksRef.current;
+        const recorderMimeType = recorder.mimeType || mimeType || "audio/webm";
+        const startedAt = recordingStartedAtRef.current;
+        const endedAt = new Date().toISOString();
+
+        mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        recordingStartedAtRef.current = null;
+
+        if (!chunks.length) {
+          setRecordingError("沒有收到可保存的音訊資料。");
+          return;
+        }
+
+        if (!window.workMemoryAudio?.saveRecording) {
+          setRecordingError("目前無法保存音訊檔，請用桌面 App 開啟。");
+          return;
+        }
+
+        try {
+          setIsSavingRecording(true);
+          const audioBlob = new Blob(chunks, { type: recorderMimeType });
+          const audioData = await audioBlob.arrayBuffer();
+          const savedFile = await window.workMemoryAudio.saveRecording({
+            audioData,
+            mimeType: recorderMimeType,
+            startedAt,
+            endedAt
+          });
+
+          setSavedRecording(savedFile);
+        } catch (error) {
+          setRecordingError(`音訊檔保存失敗：${error.message}`);
+        } finally {
+          setIsSavingRecording(false);
+          audioChunksRef.current = [];
+        }
+      };
+
+      recorder.start();
+      setRecordingState("recording");
+    } catch (error) {
+      const guidance =
+        error.name === "NotAllowedError" || error.name === "SecurityError"
+          ? "麥克風權限未開啟。請到 macOS「系統設定 > 隱私權與安全性 > 麥克風」允許 Work Memory Agent，然後重新開啟 App。"
+          : `無法開始錄音：${error.message}`;
+
+      setRecordingError(guidance);
+    }
   }
 
   function pauseRecording() {
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.pause();
+    }
+
     setRecordingState("paused");
   }
 
   function resumeRecording() {
+    if (mediaRecorderRef.current?.state === "paused") {
+      mediaRecorderRef.current.resume();
+    }
+
     setRecordingState("recording");
   }
 
-  function stopRecording() {
+  function stopRecording(options = {}) {
+    const recorder = mediaRecorderRef.current;
+
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    } else {
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+
     setRecordingState("stopped");
     setActiveView("today");
+
+    if (options.showSummaryPrompt) {
+      setSchedulePrompt({
+        type: "ended",
+        title: "今日記錄已結束，是否產生摘要？",
+        message: "已在 19:00 自動停止。目前先保存音訊檔，尚未接 AI 轉文字。"
+      });
+    }
   }
 
   function dismissSchedulePrompt() {
@@ -299,6 +437,9 @@ function App() {
           <TodayView
             recordingState={recordingState}
             schedulePrompt={schedulePrompt}
+            recordingError={recordingError}
+            savedRecording={savedRecording}
+            isSavingRecording={isSavingRecording}
             onStart={startRecording}
             onPause={pauseRecording}
             onResume={resumeRecording}
@@ -331,6 +472,9 @@ function App() {
 function TodayView({
   recordingState,
   schedulePrompt,
+  recordingError,
+  savedRecording,
+  isSavingRecording,
   onStart,
   onPause,
   onResume,
@@ -343,7 +487,7 @@ function TodayView({
       <section className="control-band">
         <div>
           <p className="eyebrow">手動開始，不自動錄音</p>
-          <h3>按下開始記錄後，畫面才會進入記錄中狀態</h3>
+          <h3>按下開始記錄後，才會請求麥克風並開始錄音</h3>
         </div>
         <div className="control-buttons">
           {recordingState === "idle" || recordingState === "stopped" ? (
@@ -374,6 +518,34 @@ function TodayView({
             </button>
           )}
         </div>
+      </section>
+
+      <section className="recording-info">
+        <div className="summary-title">
+          <Mic size={18} />
+          <h3>錄音狀態</h3>
+        </div>
+        <p>
+          App 只會請求麥克風權限，不會錄螢幕，也不會記錄鍵盤輸入。
+          第一次按「開始記錄」時，macOS 可能會跳出麥克風權限確認。
+        </p>
+        {recordingState === "recording" ? (
+          <p className="recording-live">記錄中：正在接收麥克風音訊。</p>
+        ) : null}
+        {recordingState === "paused" ? (
+          <p className="recording-paused">已暫停：目前暫停寫入新的音訊片段。</p>
+        ) : null}
+        {isSavingRecording ? (
+          <p className="recording-saving">正在保存音訊檔...</p>
+        ) : null}
+        {savedRecording ? (
+          <p className="recording-saved">
+            已保存音訊檔：<span>{savedRecording.filePath}</span>
+          </p>
+        ) : null}
+        {recordingError ? (
+          <p className="recording-error">{recordingError}</p>
+        ) : null}
       </section>
 
       {schedulePrompt ? (

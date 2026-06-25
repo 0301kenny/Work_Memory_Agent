@@ -29,7 +29,10 @@
       "out/**/*"
     ],
     "mac": {
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Work Memory Agent 只會在你手動按下開始記錄後使用麥克風錄音。"
+      }
     }
   }
 }
