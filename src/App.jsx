@@ -855,13 +855,23 @@ function SettingsView({ apiKey, setApiKey }) {
           <h3>API Key</h3>
         </div>
         <label htmlFor="api-key">由使用者自行輸入</label>
-        <input
-          id="api-key"
-          value={apiKey}
-          onChange={(event) => setApiKey(event.target.value)}
-          placeholder="貼上 OpenAI API key"
-          type="password"
-        />
+        <div className="api-key-row">
+          <input
+            id="api-key"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder="貼上 OpenAI API key"
+            type="password"
+          />
+          <button
+            className="secondary-action"
+            disabled={!apiKey}
+            onClick={() => setApiKey("")}
+            type="button"
+          >
+            清除
+          </button>
+        </div>
         <p>
           API key 只保存在目前 App 畫面狀態，不會寫死在程式裡。產生逐字稿與 AI 整理時才會送到 OpenAI API。
         </p>
