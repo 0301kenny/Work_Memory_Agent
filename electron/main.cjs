@@ -40,7 +40,9 @@ const defaultSettings = {
   summaryModelName: "gpt-4o-mini",
   localWhisperCommand: "",
   localWhisperModel: "base",
-  localWhisperModelPath: ""
+  localWhisperModelPath: "",
+  transcriptionLanguage: "mixed",
+  transcriptionPrompt: "這是工作討論錄音，內容可能包含繁體中文、英文專有名詞、產品名稱、工程術語、Kenny、PM、LIFF、API。請保留英文術語並使用繁體中文標點。"
 };
 
 function getConfigPath() {
@@ -159,7 +161,9 @@ async function saveSettingsFromRenderer(input) {
     summaryModelName: input.summaryModelName ?? defaultSettings.summaryModelName,
     localWhisperCommand: input.localWhisperCommand ?? "",
     localWhisperModel: input.localWhisperModel ?? defaultSettings.localWhisperModel,
-    localWhisperModelPath: input.localWhisperModelPath ?? ""
+    localWhisperModelPath: input.localWhisperModelPath ?? "",
+    transcriptionLanguage: input.transcriptionLanguage ?? defaultSettings.transcriptionLanguage,
+    transcriptionPrompt: input.transcriptionPrompt ?? defaultSettings.transcriptionPrompt
   };
 
   if (Object.prototype.hasOwnProperty.call(input, "apiKey")) {
@@ -210,6 +214,22 @@ function getMimeTypeFromExtension(extension) {
   }
 
   return "audio/webm";
+}
+
+function getWhisperLanguageCode(settings) {
+  if (settings.transcriptionLanguage === "zh") {
+    return "zh";
+  }
+
+  if (settings.transcriptionLanguage === "en") {
+    return "en";
+  }
+
+  return "";
+}
+
+function getTranscriptionPrompt(settings) {
+  return settings.transcriptionPrompt?.trim() || defaultSettings.transcriptionPrompt;
 }
 
 async function listSavedRecordings() {
@@ -502,6 +522,17 @@ async function createApiTranscript({ apiKey, filePath, mimeType, settings }) {
   formData.append("response_format", "verbose_json");
   formData.append("timestamp_granularities[]", "segment");
 
+  const languageCode = getWhisperLanguageCode(settings);
+  const prompt = getTranscriptionPrompt(settings);
+
+  if (languageCode) {
+    formData.append("language", languageCode);
+  }
+
+  if (prompt) {
+    formData.append("prompt", prompt);
+  }
+
   const response = await fetch(`${baseUrl}/audio/transcriptions`, {
     method: "POST",
     headers: {
@@ -584,9 +615,11 @@ async function createLocalWhisperTranscript({ filePath, settings }) {
   const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "work-memory-transcript-"));
   const outputPrefix = path.join(outputDir, "transcript");
   const commandName = path.basename(preferredCommand);
+  const languageCode = getWhisperLanguageCode(settings);
+  const prompt = getTranscriptionPrompt(settings);
 
   if (commandName === "whisper") {
-    await execWhisper(preferredCommand, [
+    const args = [
       filePath,
       "--model",
       settings.localWhisperModel || "base",
@@ -594,9 +627,19 @@ async function createLocalWhisperTranscript({ filePath, settings }) {
       "vtt",
       "--output_dir",
       outputDir
-    ]);
+    ];
+
+    if (languageCode) {
+      args.push("--language", languageCode);
+    }
+
+    if (prompt) {
+      args.push("--initial_prompt", prompt);
+    }
+
+    await execWhisper(preferredCommand, args);
   } else if (commandName === "mlx_whisper") {
-    await execWhisper(preferredCommand, [
+    const args = [
       filePath,
       "--model",
       settings.localWhisperModel || "mlx-community/whisper-base",
@@ -604,13 +647,23 @@ async function createLocalWhisperTranscript({ filePath, settings }) {
       "vtt",
       "--output-dir",
       outputDir
-    ]);
+    ];
+
+    if (languageCode) {
+      args.push("--language", languageCode);
+    }
+
+    if (prompt) {
+      args.push("--initial-prompt", prompt);
+    }
+
+    await execWhisper(preferredCommand, args);
   } else {
     if (!settings.localWhisperModelPath) {
       throw new Error("whisper.cpp 需要在設定頁填入 Local model path，例如 ~/ggml-base.bin");
     }
 
-    await execWhisper(preferredCommand, [
+    const args = [
       "-m",
       settings.localWhisperModelPath.replace(/^~/, os.homedir()),
       "-f",
@@ -618,7 +671,17 @@ async function createLocalWhisperTranscript({ filePath, settings }) {
       "-ovtt",
       "-of",
       outputPrefix
-    ]);
+    ];
+
+    if (languageCode) {
+      args.push("-l", languageCode);
+    }
+
+    if (prompt) {
+      args.push("--prompt", prompt);
+    }
+
+    await execWhisper(preferredCommand, args);
   }
 
   const files = await fs.readdir(outputDir);
@@ -730,6 +793,26 @@ async function saveHistoryRecord(record) {
 
   await writeJsonFile(getHistoryPath(), nextHistory);
   return nextRecord;
+}
+
+async function deleteHistoryRecord(recordId) {
+  const history = await loadHistory();
+  const target = history.find((item) => item.id === recordId);
+  const nextHistory = history.filter((item) => item.id !== recordId);
+
+  await writeJsonFile(getHistoryPath(), nextHistory);
+
+  if (target?.transcriptMarkdownPath) {
+    try {
+      await fs.unlink(target.transcriptMarkdownPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  return nextHistory;
 }
 
 async function saveTranscriptMarkdown(recording, transcript, settings) {
@@ -1019,6 +1102,14 @@ app.whenReady().then(() => {
   ipcMain.handle("whisper:detect", async () => detectLocalWhisperTools());
 
   ipcMain.handle("history:list", async () => loadHistory());
+
+  ipcMain.handle("history:delete", async (_event, recordId) => {
+    if (!recordId) {
+      throw new Error("缺少逐字稿紀錄 ID");
+    }
+
+    return deleteHistoryRecord(recordId);
+  });
 
   ipcMain.handle("markdown:copy", async (_event, markdown) => {
     clipboard.writeText(markdown || "");

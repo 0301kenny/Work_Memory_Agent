@@ -61,6 +61,9 @@ contextBridge.exposeInMainWorld("workMemorySettings", {
 contextBridge.exposeInMainWorld("workMemoryHistory", {
   list() {
     return ipcRenderer.invoke("history:list");
+  },
+  delete(recordId) {
+    return ipcRenderer.invoke("history:delete", recordId);
   }
 });
 

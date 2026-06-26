@@ -130,6 +130,8 @@ const defaultAppSettings = {
   localWhisperCommand: "",
   localWhisperModel: "base",
   localWhisperModelPath: "",
+  transcriptionLanguage: "mixed",
+  transcriptionPrompt: "這是工作討論錄音，內容可能包含繁體中文、英文專有名詞、產品名稱、工程術語、Kenny、PM、LIFF、API。請保留英文術語並使用繁體中文標點。",
   hasApiKey: false
 };
 
@@ -177,6 +179,8 @@ function App() {
   const [transcriptActionMessage, setTranscriptActionMessage] = useState("");
   const [recordingFiles, setRecordingFiles] = useState([]);
   const [recordingsError, setRecordingsError] = useState("");
+  const [selectedTranscriptRecord, setSelectedTranscriptRecord] = useState(null);
+  const [pendingDeleteTranscript, setPendingDeleteTranscript] = useState(null);
 
   useEffect(() => {
     recordingStateRef.current = recordingState;
@@ -495,6 +499,7 @@ function App() {
       setTranscriptMarkdownPath(result.transcriptMarkdownPath ?? "");
       setAiSummary(result.summary);
       setHistory((items) => result.historyRecord ? [result.historyRecord, ...items.filter((item) => item.id !== result.historyRecord.id)] : items);
+      setSelectedTranscriptRecord(result.historyRecord ?? null);
       setAiStatus("done");
       setActiveView("transcript");
     } catch (error) {
@@ -508,7 +513,24 @@ function App() {
 
     if (loadedHistory) {
       setHistory(loadedHistory);
+      setSelectedTranscriptRecord((current) =>
+        current ? loadedHistory.find((item) => item.id === current.id) ?? null : current
+      );
     }
+  }
+
+  async function deleteTranscriptRecord(recordId) {
+    const nextHistory = await window.workMemoryHistory?.delete?.(recordId);
+
+    if (nextHistory) {
+      setHistory(nextHistory);
+    }
+
+    if (selectedTranscriptRecord?.id === recordId) {
+      setSelectedTranscriptRecord(null);
+    }
+
+    setPendingDeleteTranscript(null);
   }
 
   async function refreshRecordingFiles() {
@@ -536,23 +558,23 @@ function App() {
     await processSavedRecording(recording);
   }
 
-  async function copyTranscriptMarkdown() {
-    if (!transcriptMarkdown) {
+  async function copyTranscriptMarkdown(markdown = transcriptMarkdown) {
+    if (!markdown) {
       return;
     }
 
-    await window.workMemoryMarkdown?.copy?.(transcriptMarkdown);
+    await window.workMemoryMarkdown?.copy?.(markdown);
     setTranscriptActionMessage("已複製逐字稿 Markdown。");
   }
 
-  async function downloadTranscriptMarkdown() {
-    if (!transcriptMarkdown) {
+  async function downloadTranscriptMarkdown(markdown = transcriptMarkdown, filename = "work-memory-transcript.md") {
+    if (!markdown) {
       return;
     }
 
     const result = await window.workMemoryMarkdown?.download?.({
-      markdown: transcriptMarkdown,
-      filename: "work-memory-transcript.md"
+      markdown,
+      filename
     });
 
     if (result?.filePath) {
@@ -742,9 +764,16 @@ function App() {
             aiError={aiError}
             isRawVisible={isRawTranscriptVisible}
             actionMessage={transcriptActionMessage}
+            history={history}
+            selectedRecord={selectedTranscriptRecord}
+            pendingDeleteRecord={pendingDeleteTranscript}
             onToggleRaw={() => setIsRawTranscriptVisible((value) => !value)}
-            onCopy={copyTranscriptMarkdown}
-            onDownload={downloadTranscriptMarkdown}
+            onCopy={(markdown) => copyTranscriptMarkdown(markdown)}
+            onDownload={(markdown, filename) => downloadTranscriptMarkdown(markdown, filename)}
+            onSelectRecord={setSelectedTranscriptRecord}
+            onAskDelete={setPendingDeleteTranscript}
+            onCancelDelete={() => setPendingDeleteTranscript(null)}
+            onConfirmDelete={deleteTranscriptRecord}
           />
         )}
 
@@ -1016,16 +1045,26 @@ function TranscriptView({
   aiError,
   isRawVisible,
   actionMessage,
+  history,
+  selectedRecord,
+  pendingDeleteRecord,
   onToggleRaw,
   onCopy,
-  onDownload
+  onDownload,
+  onSelectRecord,
+  onAskDelete,
+  onCancelDelete,
+  onConfirmDelete
 }) {
-  const recordingDate = savedRecording?.startedAt
-    ? new Date(savedRecording.startedAt).toISOString().slice(0, 10)
+  const visibleMarkdown = selectedRecord?.transcriptMarkdown ?? transcriptMarkdown;
+  const visibleTranscript = selectedRecord?.transcript ?? transcript;
+  const visibleRecording = selectedRecord?.recording ?? savedRecording;
+  const recordingDate = visibleRecording?.startedAt
+    ? new Date(visibleRecording.startedAt).toISOString().slice(0, 10)
     : "尚未錄音";
-  const recordingTime = savedRecording?.startedAt
-    ? `${new Date(savedRecording.startedAt).toTimeString().slice(0, 5)}${
-        savedRecording.endedAt ? ` - ${new Date(savedRecording.endedAt).toTimeString().slice(0, 5)}` : ""
+  const recordingTime = visibleRecording?.startedAt
+    ? `${new Date(visibleRecording.startedAt).toTimeString().slice(0, 5)}${
+        visibleRecording.endedAt ? ` - ${new Date(visibleRecording.endedAt).toTimeString().slice(0, 5)}` : ""
       }`
     : "尚未錄音";
   const mode =
@@ -1057,8 +1096,8 @@ function TranscriptView({
         <div className="control-buttons">
           <button
             className="secondary-action"
-            disabled={!transcriptMarkdown}
-            onClick={onCopy}
+            disabled={!visibleMarkdown}
+            onClick={() => onCopy(visibleMarkdown)}
             type="button"
           >
             <Copy size={18} />
@@ -1066,8 +1105,8 @@ function TranscriptView({
           </button>
           <button
             className="secondary-action"
-            disabled={!transcriptMarkdown}
-            onClick={onDownload}
+            disabled={!visibleMarkdown}
+            onClick={() => onDownload(visibleMarkdown, `${selectedRecord?.title ?? "work-memory-transcript"}.md`)}
             type="button"
           >
             <Download size={18} />
@@ -1096,17 +1135,50 @@ function TranscriptView({
         </section>
       ) : null}
 
-      {!transcriptMarkdown && aiStatus !== "processing" && aiStatus !== "error" ? (
+      <section className="transcript-layout">
+        <aside className="transcript-list-panel">
+          <div className="transcript-toolbar">
+            <h3>逐字稿列表</h3>
+          </div>
+          {history.length ? (
+            <div className="transcript-record-list">
+              {history.map((record) => (
+                <article
+                  className={`transcript-record-item ${selectedRecord?.id === record.id ? "active" : ""}`}
+                  key={record.id}
+                >
+                  <button onClick={() => onSelectRecord(record)} type="button">
+                    <span>{record.date}</span>
+                    <strong>{record.title}</strong>
+                    <small>{record.provider === "local-whisper" ? "Local Whisper" : "API"}</small>
+                  </button>
+                  <button
+                    className="delete-transcript-button"
+                    onClick={() => onAskDelete(record)}
+                    type="button"
+                  >
+                    刪除
+                  </button>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-summary">尚無逐字稿紀錄。</p>
+          )}
+        </aside>
+
+        <section className="transcript-detail-panel">
+      {!visibleMarkdown && aiStatus !== "processing" && aiStatus !== "error" ? (
         <section className="transcript-state empty-state">
           <FileText size={22} />
           <div>
-            <h3>還沒有逐字稿</h3>
-            <p>完成一次錄音並按「產生 AI 整理」後，Markdown 逐字稿會顯示在這裡。</p>
+            <h3>請選擇逐字稿</h3>
+            <p>從左側列表點選某一筆逐字稿後，Markdown 內容會顯示在這裡。</p>
           </div>
         </section>
       ) : null}
 
-      {transcriptMarkdown ? (
+      {visibleMarkdown ? (
         <section className="transcript-content">
           <div className="transcript-toolbar">
             <h3>{isRawVisible ? "原始文字" : "Markdown 預覽"}</h3>
@@ -1116,12 +1188,35 @@ function TranscriptView({
             </button>
           </div>
           {isRawVisible ? (
-            <pre className="raw-transcript">{transcript?.text ?? ""}</pre>
+            <pre className="raw-transcript">{visibleTranscript?.text ?? ""}</pre>
           ) : (
-            <pre className="markdown-preview transcript-markdown">{transcriptMarkdown}</pre>
+            <pre className="markdown-preview transcript-markdown">{visibleMarkdown}</pre>
           )}
           {actionMessage ? <p className="action-message">{actionMessage}</p> : null}
         </section>
+      ) : null}
+        </section>
+      </section>
+
+      {pendingDeleteRecord ? (
+        <div className="confirm-backdrop" role="presentation">
+          <section className="confirm-dialog" role="dialog" aria-modal="true">
+            <h3>刪除逐字稿？</h3>
+            <p>確定要刪除「{pendingDeleteRecord.title}」嗎？這會刪除本機逐字稿紀錄與 Markdown 檔，但不會刪除原始錄音檔。</p>
+            <div className="control-buttons">
+              <button className="secondary-action" onClick={onCancelDelete} type="button">
+                取消
+              </button>
+              <button
+                className="danger-action"
+                onClick={() => onConfirmDelete(pendingDeleteRecord.id)}
+                type="button"
+              >
+                確認刪除
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
     </div>
   );
@@ -1361,6 +1456,40 @@ function SettingsView({
           <option value="api">OpenAI-compatible API</option>
           <option value="custom">Custom API endpoint</option>
         </select>
+
+        <div className="settings-subsection">
+          <label htmlFor="transcription-language">辨識語言</label>
+          <select
+            id="transcription-language"
+            value={settings.transcriptionLanguage}
+            onChange={(event) =>
+              setSettings((current) => ({
+                ...current,
+                transcriptionLanguage: event.target.value
+              }))
+            }
+          >
+            <option value="mixed">中英文混雜 / 自動偵測</option>
+            <option value="zh">中文 / Mandarin</option>
+            <option value="en">英文 / English</option>
+            <option value="auto">自動偵測</option>
+          </select>
+          <label htmlFor="transcription-prompt">轉錄提示詞</label>
+          <textarea
+            id="transcription-prompt"
+            value={settings.transcriptionPrompt}
+            onChange={(event) =>
+              setSettings((current) => ({
+                ...current,
+                transcriptionPrompt: event.target.value
+              }))
+            }
+            placeholder="提供常見人名、產品名、英文術語，能改善辨識品質"
+          />
+          <p>
+            中英混雜時建議選「中英文混雜 / 自動偵測」，並在提示詞放入常見英文術語與人名。
+          </p>
+        </div>
 
         {settings.transcriptionProvider === "local-whisper" ? (
           <div className="settings-subsection">

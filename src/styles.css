@@ -21,7 +21,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -602,7 +603,8 @@ button {
 
 .search-band input,
 .settings-panel input,
-.settings-panel select {
+.settings-panel select,
+.settings-panel textarea {
   width: 100%;
   border: 0;
   outline: 0;
@@ -650,6 +652,8 @@ button {
   background: #1f2529;
   color: #f4f0e8;
   line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .transcript-header,
@@ -712,6 +716,101 @@ button {
   display: grid;
   gap: 12px;
   padding: 18px;
+}
+
+.transcript-layout {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.transcript-list-panel,
+.transcript-detail-panel {
+  min-width: 0;
+}
+
+.transcript-list-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #e4ded2;
+  border-radius: 8px;
+  background: #fffdfa;
+}
+
+.transcript-record-list {
+  display: grid;
+  gap: 10px;
+  max-height: 62vh;
+  overflow: auto;
+}
+
+.transcript-record-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #e4ded2;
+  border-radius: 8px;
+  background: #f9f6ef;
+}
+
+.transcript-record-item.active {
+  border-color: #2f6f55;
+  background: #eef4ef;
+}
+
+.transcript-record-item button:first-child {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  background: transparent;
+  color: #25231f;
+  text-align: left;
+}
+
+.transcript-record-item span,
+.transcript-record-item small {
+  color: #6e756f;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.delete-transcript-button {
+  justify-self: start;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #fff0ee;
+  color: #a8271d;
+  font-weight: 800;
+}
+
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(31, 37, 41, 0.38);
+}
+
+.confirm-dialog {
+  width: min(440px, 100%);
+  padding: 20px;
+  border-radius: 8px;
+  background: #fffdfa;
+  box-shadow: 0 18px 60px rgba(31, 37, 41, 0.22);
+}
+
+.confirm-dialog h3 {
+  margin: 0;
+}
+
+.confirm-dialog p {
+  margin: 12px 0 18px;
+  color: #3c403c;
+  line-height: 1.5;
 }
 
 .recording-file-list {
@@ -828,6 +927,16 @@ button {
   background: #f9f6ef;
 }
 
+.settings-panel textarea {
+  min-height: 96px;
+  padding: 12px;
+  border: 1px solid #dcd5c8;
+  border-radius: 8px;
+  background: #f9f6ef;
+  resize: vertical;
+  line-height: 1.5;
+}
+
 .settings-subsection {
   margin-top: 14px;
 }
@@ -885,7 +994,8 @@ button {
 @media (max-width: 1060px) {
   .summary-grid,
   .schedule-grid,
-  .settings-grid {
+  .settings-grid,
+  .transcript-layout {
     grid-template-columns: 1fr;
   }
 }
