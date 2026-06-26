@@ -28,11 +28,47 @@ contextBridge.exposeInMainWorld("workMemoryAudio", {
   },
   showRecordingInFolder(filePath) {
     return ipcRenderer.invoke("recording:show-in-folder", filePath);
+  },
+  listRecordings() {
+    return ipcRenderer.invoke("recording:list");
   }
 });
 
 contextBridge.exposeInMainWorld("workMemoryAi", {
   processRecording(request) {
     return ipcRenderer.invoke("ai:process-recording", request);
+  }
+});
+
+contextBridge.exposeInMainWorld("workMemorySettings", {
+  load() {
+    return ipcRenderer.invoke("settings:load");
+  },
+  save(settings) {
+    return ipcRenderer.invoke("settings:save", settings);
+  },
+  clearApiKey() {
+    return ipcRenderer.invoke("settings:clear-api-key");
+  },
+  testConnection(settings) {
+    return ipcRenderer.invoke("settings:test-connection", settings);
+  },
+  detectWhisper() {
+    return ipcRenderer.invoke("whisper:detect");
+  }
+});
+
+contextBridge.exposeInMainWorld("workMemoryHistory", {
+  list() {
+    return ipcRenderer.invoke("history:list");
+  }
+});
+
+contextBridge.exposeInMainWorld("workMemoryMarkdown", {
+  copy(markdown) {
+    return ipcRenderer.invoke("markdown:copy", markdown);
+  },
+  download(payload) {
+    return ipcRenderer.invoke("markdown:download", payload);
   }
 });

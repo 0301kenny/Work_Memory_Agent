@@ -20,7 +20,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -265,6 +266,11 @@ button {
 .secondary-action {
   background: #e6ecf0;
   color: #24333d;
+}
+
+.secondary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .danger-action {
@@ -583,7 +589,7 @@ button {
 
 .search-band {
   display: grid;
-  grid-template-columns: 22px 1fr;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   min-height: 52px;
@@ -595,7 +601,8 @@ button {
 }
 
 .search-band input,
-.settings-panel input {
+.settings-panel input,
+.settings-panel select {
   width: 100%;
   border: 0;
   outline: 0;
@@ -634,6 +641,7 @@ button {
 
 .markdown-preview {
   min-height: 420px;
+  max-height: 560px;
   margin: 0;
   padding: 20px;
   overflow: auto;
@@ -642,6 +650,151 @@ button {
   background: #1f2529;
   color: #f4f0e8;
   line-height: 1.55;
+}
+
+.transcript-header,
+.transcript-state,
+.transcript-content {
+  border: 1px solid #e4ded2;
+  border-radius: 8px;
+  background: #fffdfa;
+}
+
+.transcript-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px;
+}
+
+.transcript-header h3,
+.transcript-state h3,
+.transcript-toolbar h3 {
+  margin: 0;
+}
+
+.transcript-header p {
+  margin: 8px 0 0;
+  color: #636760;
+  line-height: 1.45;
+}
+
+.transcript-state {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  padding: 18px;
+}
+
+.loading-state {
+  border-color: #e4b363;
+  background: #fff8e8;
+}
+
+.error-state {
+  border-color: #df4d3f;
+  background: #fff0ee;
+}
+
+.empty-state {
+  border-color: #d8e4dc;
+  background: #fbfffc;
+}
+
+.transcript-state p {
+  margin: 8px 0 0;
+  color: #636760;
+  line-height: 1.5;
+}
+
+.transcript-content {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+}
+
+.recording-file-list {
+  display: grid;
+  gap: 18px;
+}
+
+.recording-date-group {
+  display: grid;
+  gap: 10px;
+}
+
+.recording-date-group h3 {
+  margin: 0;
+  color: #28323a;
+  font-size: 18px;
+}
+
+.recording-file-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.recording-file-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid #e4ded2;
+  border-radius: 8px;
+  background: #fffdfa;
+}
+
+.recording-file-card h4,
+.recording-file-card p {
+  margin: 0;
+}
+
+.recording-file-card h4 {
+  margin-top: 4px;
+}
+
+.recording-file-card p:not(.eyebrow) {
+  margin-top: 6px;
+  color: #636760;
+  overflow-wrap: anywhere;
+}
+
+.recording-file-actions {
+  flex: 0 0 auto;
+}
+
+.transcript-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.transcript-markdown,
+.raw-transcript {
+  min-height: 360px;
+  max-height: 58vh;
+  overflow: auto;
+}
+
+.raw-transcript {
+  margin: 0;
+  padding: 18px;
+  border: 1px solid #dcd5c8;
+  border-radius: 8px;
+  background: #f9f6ef;
+  color: #25231f;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.action-message,
+.settings-message {
+  margin: 0;
+  color: #245b3a;
+  font-weight: 800;
 }
 
 .settings-grid {
@@ -665,6 +818,56 @@ button {
   border: 1px solid #dcd5c8;
   border-radius: 8px;
   background: #f9f6ef;
+}
+
+.settings-panel select {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid #dcd5c8;
+  border-radius: 8px;
+  background: #f9f6ef;
+}
+
+.settings-subsection {
+  margin-top: 14px;
+}
+
+.settings-actions {
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.cost-warning {
+  padding: 10px 12px;
+  border: 1px solid #e4b363;
+  border-radius: 8px;
+  background: #fff8e8;
+  color: #5d4110;
+  font-weight: 800;
+}
+
+.install-help {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #d8e4dc;
+  border-radius: 8px;
+  background: #fbfffc;
+}
+
+.install-help h4 {
+  margin: 0 0 8px;
+}
+
+.install-steps {
+  margin: 14px 0 0;
+  padding-left: 22px;
+}
+
+.install-steps code {
+  padding: 2px 5px;
+  border-radius: 6px;
+  background: #eef4ef;
+  color: #245b3a;
 }
 
 .api-key-row {

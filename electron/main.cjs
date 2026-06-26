@@ -1,11 +1,174 @@
-const { app, BrowserWindow, Notification, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Notification, ipcMain, shell, safeStorage, clipboard } = require("electron");
+const { execFile } = require("node:child_process");
 const fs = require("node:fs/promises");
+const os = require("node:os");
 const path = require("node:path");
+const { promisify } = require("node:util");
 
 const isDev = !app.isPackaged;
 let mainWindow = null;
 let currentRecordingState = "idle";
 const activeRecordingStates = new Set(["recording", "paused"]);
+const execFileAsync = promisify(execFile);
+
+function isBrokenPipeError(error) {
+  return error?.code === "EPIPE";
+}
+
+function ignoreBrokenPipe(error) {
+  if (!isBrokenPipeError(error)) {
+    throw error;
+  }
+}
+
+process.stdout?.on?.("error", ignoreBrokenPipe);
+process.stderr?.on?.("error", ignoreBrokenPipe);
+
+process.on("uncaughtException", (error) => {
+  if (isBrokenPipeError(error)) {
+    return;
+  }
+
+  throw error;
+});
+
+const defaultSettings = {
+  transcriptionProvider: "local-whisper",
+  apiProvider: "openai-compatible",
+  baseUrl: "https://api.openai.com/v1",
+  modelName: "whisper-1",
+  summaryModelName: "gpt-4o-mini",
+  localWhisperCommand: "",
+  localWhisperModel: "base",
+  localWhisperModelPath: ""
+};
+
+function getConfigPath() {
+  return path.join(app.getPath("userData"), "settings.json");
+}
+
+function getHistoryPath() {
+  return path.join(app.getPath("userData"), "history.json");
+}
+
+function getTranscriptMarkdown(transcript, recording, settings) {
+  const startedAt = recording?.startedAt ? new Date(recording.startedAt) : new Date();
+  const endedAt = recording?.endedAt ? new Date(recording.endedAt) : null;
+  const date = startedAt.toISOString().slice(0, 10);
+  const startedTime = startedAt.toTimeString().slice(0, 5);
+  const endedTime = endedAt ? endedAt.toTimeString().slice(0, 5) : "";
+  const mode =
+    settings.transcriptionProvider === "local-whisper"
+      ? "Local Whisper"
+      : settings.apiProvider === "custom"
+        ? "Custom API endpoint"
+        : "OpenAI-compatible API";
+  const lines = [
+    "# 工作討論逐字稿",
+    "",
+    `日期：${date}`,
+    `時間：${endedTime ? `${startedTime} - ${endedTime}` : startedTime}`,
+    `轉錄方式：${mode}`,
+    "",
+    "## 逐字稿",
+    ""
+  ];
+
+  for (const segment of transcript?.segments ?? []) {
+    lines.push(`[${segment.time}] ${segment.text}`);
+  }
+
+  if (!transcript?.segments?.length && transcript?.text) {
+    lines.push(transcript.text);
+  }
+
+  return lines.join("\n");
+}
+
+async function readJsonFile(filePath, fallbackValue) {
+  try {
+    const text = await fs.readFile(filePath, "utf8");
+    return JSON.parse(text);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return fallbackValue;
+    }
+
+    throw error;
+  }
+}
+
+async function writeJsonFile(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function encryptApiKey(apiKey) {
+  if (!apiKey) {
+    return "";
+  }
+
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("目前系統不支援安全儲存 API key");
+  }
+
+  return safeStorage.encryptString(apiKey).toString("base64");
+}
+
+function decryptApiKey(encryptedApiKey) {
+  if (!encryptedApiKey) {
+    return "";
+  }
+
+  if (!safeStorage.isEncryptionAvailable()) {
+    return "";
+  }
+
+  return safeStorage.decryptString(Buffer.from(encryptedApiKey, "base64"));
+}
+
+async function loadSettingsWithSecret() {
+  const saved = await readJsonFile(getConfigPath(), {});
+  const apiKey = decryptApiKey(saved.encryptedApiKey);
+
+  return {
+    ...defaultSettings,
+    ...saved,
+    apiKey,
+    hasApiKey: Boolean(apiKey),
+    encryptedApiKey: undefined
+  };
+}
+
+async function loadSettingsForRenderer() {
+  const settings = await loadSettingsWithSecret();
+  const { apiKey, ...safeSettings } = settings;
+
+  return safeSettings;
+}
+
+async function saveSettingsFromRenderer(input) {
+  const current = await readJsonFile(getConfigPath(), {});
+  const next = {
+    ...defaultSettings,
+    ...current,
+    transcriptionProvider: input.transcriptionProvider ?? defaultSettings.transcriptionProvider,
+    apiProvider: input.apiProvider ?? defaultSettings.apiProvider,
+    baseUrl: input.baseUrl ?? defaultSettings.baseUrl,
+    modelName: input.modelName ?? defaultSettings.modelName,
+    summaryModelName: input.summaryModelName ?? defaultSettings.summaryModelName,
+    localWhisperCommand: input.localWhisperCommand ?? "",
+    localWhisperModel: input.localWhisperModel ?? defaultSettings.localWhisperModel,
+    localWhisperModelPath: input.localWhisperModelPath ?? ""
+  };
+
+  if (Object.prototype.hasOwnProperty.call(input, "apiKey")) {
+    next.encryptedApiKey = encryptApiKey(input.apiKey);
+  }
+
+  await writeJsonFile(getConfigPath(), next);
+  return loadSettingsForRenderer();
+}
 
 function getRecordingExtension(mimeType) {
   if (mimeType?.includes("mp4")) {
@@ -25,6 +188,64 @@ function getRecordingFilename(startedAt, mimeType) {
   const extension = getRecordingExtension(mimeType);
 
   return `work-memory-${timestamp}.${extension}`;
+}
+
+function parseRecordingDateFromFilename(filename) {
+  const match = filename.match(/work-memory-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+
+  if (!match) {
+    return null;
+  }
+
+  return new Date(`${match[1]}T${match[2]}:${match[3]}:${match[4]}`);
+}
+
+function getMimeTypeFromExtension(extension) {
+  if (extension === ".m4a" || extension === ".mp4") {
+    return "audio/mp4";
+  }
+
+  if (extension === ".ogg") {
+    return "audio/ogg";
+  }
+
+  return "audio/webm";
+}
+
+async function listSavedRecordings() {
+  const recordingsDir = path.join(app.getPath("userData"), "recordings");
+
+  await fs.mkdir(recordingsDir, { recursive: true });
+
+  const files = await fs.readdir(recordingsDir);
+  const recordings = [];
+
+  for (const filename of files) {
+    const extension = path.extname(filename);
+
+    if (![".webm", ".m4a", ".mp4", ".ogg"].includes(extension)) {
+      continue;
+    }
+
+    const filePath = path.join(recordingsDir, filename);
+    const stats = await fs.stat(filePath);
+    const recordedAt = parseRecordingDateFromFilename(filename) ?? stats.mtime;
+
+    recordings.push({
+      id: filePath,
+      filename,
+      filePath,
+      mimeType: getMimeTypeFromExtension(extension),
+      startedAt: recordedAt.toISOString(),
+      endedAt: "",
+      date: recordedAt.toISOString().slice(0, 10),
+      time: recordedAt.toTimeString().slice(0, 8),
+      size: stats.size,
+      title: `${recordedAt.toISOString().slice(0, 10)} ${recordedAt.toTimeString().slice(0, 5)}`
+    });
+  }
+
+  return recordings.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
 }
 
 function formatSeconds(seconds) {
@@ -141,20 +362,147 @@ async function readJsonResponse(response, fallbackMessage) {
   return JSON.parse(text);
 }
 
-async function createTranscript({ apiKey, filePath, mimeType }) {
+async function resolveCommandPath(command) {
+  if (!command) {
+    return "";
+  }
+
+  const expandedCommand = command.replace(/^~/, os.homedir());
+
+  if (path.isAbsolute(expandedCommand) || expandedCommand.includes("/")) {
+    return expandedCommand;
+  }
+
+  const pathEnv = [
+    path.join(os.homedir(), ".local/bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    process.env.PATH
+  ]
+    .filter(Boolean)
+    .join(":");
+
+  try {
+    const { stdout } = await execFileAsync(
+      "zsh",
+      ["-lc", 'command -v -- "$1"', "zsh", expandedCommand],
+      {
+        env: {
+          ...process.env,
+          PATH: pathEnv
+        },
+        timeout: 3000
+      }
+    );
+
+    return stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
+function getWhisperExecutionEnv() {
+  return {
+    ...process.env,
+    PATH: [
+      path.join(os.homedir(), ".local/bin"),
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      process.env.PATH
+    ]
+      .filter(Boolean)
+      .join(":")
+  };
+}
+
+async function execWhisper(command, args) {
+  const commandPath = await resolveCommandPath(command);
+
+  if (!commandPath) {
+    throw new Error(`找不到 Local Whisper 指令：${command}`);
+  }
+
+  return execFileAsync(commandPath, args, {
+    env: getWhisperExecutionEnv(),
+    timeout: 30 * 60 * 1000
+  });
+}
+
+async function getCommandCheck(command) {
+  const commandPath = await resolveCommandPath(command);
+
+  return {
+    installed: Boolean(commandPath),
+    path: commandPath
+  };
+}
+
+async function commandExists(command) {
+  try {
+    return Boolean(await resolveCommandPath(command));
+  } catch {
+    return false;
+  }
+}
+
+async function detectLocalWhisperTools() {
+  const candidates = [
+    {
+      id: "whisper-cli",
+      label: "whisper.cpp whisper-cli",
+      command: "whisper-cli",
+      install: [
+        "brew install whisper-cpp",
+        "下載模型，例如：curl -L -o ~/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+        "在設定頁填入 Local model path，例如 ~/ggml-base.bin"
+      ]
+    },
+    {
+      id: "whisper",
+      label: "OpenAI Whisper Python CLI",
+      command: "whisper",
+      install: ["pipx install openai-whisper", "或使用 pip install -U openai-whisper"]
+    },
+    {
+      id: "mlx_whisper",
+      label: "MLX Whisper",
+      command: "mlx_whisper",
+      install: ["pipx install mlx-whisper", "適合 Apple Silicon 的本機轉錄方案"]
+    }
+  ];
+  const checked = [];
+
+  for (const candidate of candidates) {
+    const commandCheck = await getCommandCheck(candidate.command);
+
+    checked.push({
+      ...candidate,
+      installed: commandCheck.installed,
+      path: commandCheck.path
+    });
+  }
+
+  return {
+    installed: checked.filter((tool) => tool.installed),
+    checked
+  };
+}
+
+async function createApiTranscript({ apiKey, filePath, mimeType, settings }) {
   const audioBuffer = await fs.readFile(filePath);
   const formData = new FormData();
+  const baseUrl = (settings.baseUrl || defaultSettings.baseUrl).replace(/\/$/, "");
 
   formData.append(
     "file",
     new Blob([audioBuffer], { type: mimeType || "audio/webm" }),
     path.basename(filePath)
   );
-  formData.append("model", "whisper-1");
+  formData.append("model", settings.modelName || defaultSettings.modelName);
   formData.append("response_format", "verbose_json");
   formData.append("timestamp_granularities[]", "segment");
 
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+  const response = await fetch(`${baseUrl}/audio/transcriptions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`
@@ -185,15 +533,140 @@ async function createTranscript({ apiKey, filePath, mimeType }) {
   };
 }
 
-async function createAiSummary({ apiKey, transcriptSegments }) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
+function parseVttOrSrt(text) {
+  const blocks = text.split(/\n\s*\n/);
+  const segments = [];
+
+  for (const block of blocks) {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const timeLine = lines.find((line) => line.includes("-->"));
+
+    if (!timeLine) {
+      continue;
+    }
+
+    const body = lines.filter((line) => !line.includes("-->") && !/^\d+$/.test(line)).join(" ");
+    const start = timeLine.split("-->")[0].trim().replace(",", ".");
+    const match = start.match(/(?:(\d+):)?(\d+):(\d+)/);
+
+    if (body && match) {
+      const hours = Number(match[1] ?? 0);
+      const minutes = Number(match[2] ?? 0);
+      const seconds = Number(match[3] ?? 0);
+      segments.push({
+        start: hours * 3600 + minutes * 60 + seconds,
+        end: 0,
+        time: formatSeconds(hours * 3600 + minutes * 60 + seconds),
+        text: body
+      });
+    }
+  }
+
+  return segments;
+}
+
+async function createLocalWhisperTranscript({ filePath, settings }) {
+  const detection = await detectLocalWhisperTools();
+  const preferredCommand =
+    settings.localWhisperCommand || detection.installed[0]?.command || "";
+
+  if (!preferredCommand) {
+    const installs = detection.checked
+      .map((tool) => `${tool.label}: ${tool.install.join("；")}`)
+      .join("\n");
+
+    throw new Error(`尚未安裝 Local Whisper 工具。可安裝其中一種：\n${installs}`);
+  }
+
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "work-memory-transcript-"));
+  const outputPrefix = path.join(outputDir, "transcript");
+  const commandName = path.basename(preferredCommand);
+
+  if (commandName === "whisper") {
+    await execWhisper(preferredCommand, [
+      filePath,
+      "--model",
+      settings.localWhisperModel || "base",
+      "--output_format",
+      "vtt",
+      "--output_dir",
+      outputDir
+    ]);
+  } else if (commandName === "mlx_whisper") {
+    await execWhisper(preferredCommand, [
+      filePath,
+      "--model",
+      settings.localWhisperModel || "mlx-community/whisper-base",
+      "--output-format",
+      "vtt",
+      "--output-dir",
+      outputDir
+    ]);
+  } else {
+    if (!settings.localWhisperModelPath) {
+      throw new Error("whisper.cpp 需要在設定頁填入 Local model path，例如 ~/ggml-base.bin");
+    }
+
+    await execWhisper(preferredCommand, [
+      "-m",
+      settings.localWhisperModelPath.replace(/^~/, os.homedir()),
+      "-f",
+      filePath,
+      "-ovtt",
+      "-of",
+      outputPrefix
+    ]);
+  }
+
+  const files = await fs.readdir(outputDir);
+  const transcriptFile = files.find((file) => file.endsWith(".vtt") || file.endsWith(".srt") || file.endsWith(".txt"));
+
+  if (!transcriptFile) {
+    throw new Error("Local Whisper 已執行，但沒有找到輸出的逐字稿檔案");
+  }
+
+  const transcriptText = await fs.readFile(path.join(outputDir, transcriptFile), "utf8");
+  const segments = parseVttOrSrt(transcriptText);
+
+  return {
+    text: segments.length ? segments.map((segment) => segment.text).join(" ") : transcriptText.trim(),
+    segments: segments.length ? segments : [{ start: 0, end: 0, time: "00:00", text: transcriptText.trim() }]
+  };
+}
+
+async function createTranscript({ apiKey, recording, settings }) {
+  if (settings.transcriptionProvider === "local-whisper") {
+    return createLocalWhisperTranscript({
+      filePath: recording.filePath,
+      settings
+    });
+  }
+
+  if (!apiKey?.trim()) {
+    throw new Error("API 模式需要先在設定頁儲存 API key");
+  }
+
+  return createApiTranscript({
+    apiKey,
+    filePath: recording.filePath,
+    mimeType: recording.mimeType,
+    settings
+  });
+}
+
+async function createAiSummary({ apiKey, transcriptSegments, settings }) {
+  const baseUrl = (settings.baseUrl || defaultSettings.baseUrl).replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/responses`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: "gpt-5.5",
+      model: settings.summaryModelName || defaultSettings.summaryModelName,
       input: [
         {
           role: "system",
@@ -224,6 +697,67 @@ async function createAiSummary({ apiKey, transcriptSegments }) {
   }
 
   return JSON.parse(responseText);
+}
+
+function createBasicLocalSummary(transcriptSegments) {
+  return {
+    discussionSummary: transcriptSegments.map((segment) => ({
+      text: segment.text,
+      sourceTime: segment.time
+    })),
+    stakeholderRequests: [],
+    kennyTasks: [],
+    otherTasks: [],
+    decisionsMade: [],
+    undecidedItems: [],
+    risksAndBlockers: [],
+    tomorrowReminders: []
+  };
+}
+
+async function loadHistory() {
+  return readJsonFile(getHistoryPath(), []);
+}
+
+async function saveHistoryRecord(record) {
+  const history = await loadHistory();
+  const nextRecord = {
+    ...record,
+    id: record.id || `record-${Date.now()}`,
+    createdAt: record.createdAt || new Date().toISOString()
+  };
+  const nextHistory = [nextRecord, ...history.filter((item) => item.id !== nextRecord.id)];
+
+  await writeJsonFile(getHistoryPath(), nextHistory);
+  return nextRecord;
+}
+
+async function saveTranscriptMarkdown(recording, transcript, settings) {
+  const markdown = getTranscriptMarkdown(transcript, recording, settings);
+  const transcriptsDir = path.join(app.getPath("userData"), "transcripts");
+  const startedAt = recording?.startedAt ? new Date(recording.startedAt) : new Date();
+  const filename = `transcript-${startedAt.toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "")}.md`;
+  const filePath = path.join(transcriptsDir, filename);
+
+  await fs.mkdir(transcriptsDir, { recursive: true });
+  await fs.writeFile(filePath, markdown, "utf8");
+
+  return {
+    markdown,
+    filePath,
+    filename
+  };
+}
+
+async function downloadMarkdown(markdown, suggestedName = "work-memory-transcript.md") {
+  const downloadsDir = app.getPath("downloads");
+  const safeName = suggestedName.replace(/[/:]/g, "-");
+  const filePath = path.join(downloadsDir, safeName.endsWith(".md") ? safeName : `${safeName}.md`);
+
+  await fs.writeFile(filePath, markdown, "utf8");
+  shell.showItemInFolder(filePath);
+
+  return { filePath };
 }
 
 function createWindow() {
@@ -387,32 +921,113 @@ app.whenReady().then(() => {
     return true;
   });
 
-  ipcMain.handle("ai:process-recording", async (_event, request) => {
-    const { apiKey, recording } = request ?? {};
+  ipcMain.handle("recording:list", async () => listSavedRecordings());
 
-    if (!apiKey?.trim()) {
-      throw new Error("請先到設定頁貼上 API key");
-    }
+  ipcMain.handle("ai:process-recording", async (_event, request) => {
+    const { recording } = request ?? {};
+    const settings = await loadSettingsWithSecret();
+    const apiKey = settings.apiKey;
 
     if (!recording?.filePath || !path.isAbsolute(recording.filePath)) {
       throw new Error("找不到可整理的本機音訊檔");
     }
 
     const transcript = await createTranscript({
-      apiKey: apiKey.trim(),
-      filePath: recording.filePath,
-      mimeType: recording.mimeType
+      apiKey,
+      recording,
+      settings
     });
-    const summary = await createAiSummary({
-      apiKey: apiKey.trim(),
-      transcriptSegments: transcript.segments
+    const markdownFile = await saveTranscriptMarkdown(recording, transcript, settings);
+    let summary = createBasicLocalSummary(transcript.segments);
+
+    if (settings.transcriptionProvider !== "local-whisper" || apiKey) {
+      summary = await createAiSummary({
+        apiKey,
+        transcriptSegments: transcript.segments,
+        settings
+      });
+    }
+
+    const historyRecord = await saveHistoryRecord({
+      title: `工作逐字稿 ${new Date(recording.startedAt ?? Date.now()).toLocaleString("zh-TW")}`,
+      date: new Date(recording.startedAt ?? Date.now()).toISOString().slice(0, 10),
+      recording,
+      transcript,
+      transcriptMarkdown: markdownFile.markdown,
+      transcriptMarkdownPath: markdownFile.filePath,
+      summary,
+      provider: settings.transcriptionProvider,
+      status: "completed"
     });
 
     return {
       transcript,
-      summary
+      summary,
+      transcriptMarkdown: markdownFile.markdown,
+      transcriptMarkdownPath: markdownFile.filePath,
+      historyRecord
     };
   });
+
+  ipcMain.handle("settings:load", async () => loadSettingsForRenderer());
+
+  ipcMain.handle("settings:save", async (_event, settings) =>
+    saveSettingsFromRenderer(settings)
+  );
+
+  ipcMain.handle("settings:clear-api-key", async () => {
+    const current = await readJsonFile(getConfigPath(), {});
+    delete current.encryptedApiKey;
+    await writeJsonFile(getConfigPath(), current);
+    return loadSettingsForRenderer();
+  });
+
+  ipcMain.handle("settings:test-connection", async (_event, settingsInput) => {
+    const settings = {
+      ...(await loadSettingsWithSecret()),
+      ...settingsInput
+    };
+
+    if (settings.transcriptionProvider === "local-whisper") {
+      const detection = await detectLocalWhisperTools();
+
+      if (!detection.installed.length) {
+        throw new Error("尚未偵測到 Local Whisper 工具");
+      }
+
+      return { ok: true, message: `已偵測到 ${detection.installed[0].label}` };
+    }
+
+    if (!settings.apiKey?.trim()) {
+      throw new Error("請先輸入並儲存 API key");
+    }
+
+    const baseUrl = (settings.baseUrl || defaultSettings.baseUrl).replace(/\/$/, "");
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: {
+        Authorization: `Bearer ${settings.apiKey}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`連線測試失敗：HTTP ${response.status}`);
+    }
+
+    return { ok: true, message: "API 連線成功" };
+  });
+
+  ipcMain.handle("whisper:detect", async () => detectLocalWhisperTools());
+
+  ipcMain.handle("history:list", async () => loadHistory());
+
+  ipcMain.handle("markdown:copy", async (_event, markdown) => {
+    clipboard.writeText(markdown || "");
+    return true;
+  });
+
+  ipcMain.handle("markdown:download", async (_event, { markdown, filename }) =>
+    downloadMarkdown(markdown, filename)
+  );
 
   createWindow();
   setupSchedules();
